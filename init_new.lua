@@ -439,6 +439,12 @@ ENT.GrenadesThrown   = 0
 ENT.NextGrenadeTime  = 0        -- timestamp avant lequel il ne relancera pas
 
 
+-- throttle check porte
+ENT.NextDoorCheck = 0
+ENT.DoorCheckInterval = 0.5  -- chaque 0.5s max
+
+
+
 
 -- couverture
 ENT.CoveringEnabled           = true    -- active le cover system
@@ -480,6 +486,15 @@ function ENT:CustomOnThink_Alive()
 	  end
 	end
 
+	  -- limiter à 2 grenades max
+  if not self.GrenadesThrown then self.GrenadesThrown = 0 end
+  if not self.NextGrenadeTime then self.NextGrenadeTime = 0 end
+  if CurTime() >= self.NextGrenadeTime and self.GrenadesThrown < 2 then
+    -- ton code ThrowGrenade() ici…
+    self.GrenadesThrown    = self.GrenadesThrown + 1
+    self.NextGrenadeTime   = CurTime() + 5
+  end
+
 	for _, door in ipairs(ents.FindInSphere(self:GetPos(), 100)) do
 		if door:GetClass():find("door_rotating") then
 		  local state = door:GetInternalVariable("m_toggle_state")
@@ -506,19 +521,52 @@ function ENT:CustomOnThink_Alive()
 	  end
 	
 	-- 2) lancer de grenade sur toute porte (prop_ ou func_)
-	local ct = CurTime()
-	if ct > self.NextGrenadeTime and self.GrenadesThrown < self.MaxGrenades then
-		for _, d in ipairs(ents.FindInSphere(enemy:GetPos(), 100)) do
-			if d:GetClass():find("door_rotating") then
-				self:VJ_ACT_PLAYACTIVITY(ACT_RANGE_ATTACK1, true)
-				self:ThrowGrenade()
-				self.GrenadesThrown   = self.GrenadesThrown + 1
-				self.NextGrenadeTime  = ct + 5    -- cooldown 5s avant grenade suivante
-		  break
-		end
-	  end
+    -- limiter à 2 grenades max
+	if not self.GrenadesThrown then self.GrenadesThrown = 0 end
+	if not self.NextGrenadeTime then self.NextGrenadeTime = 0 end
+	if CurTime() >= self.NextGrenadeTime and self.GrenadesThrown < 2 then
+	  -- ton code ThrowGrenade() ici…
+	  self.GrenadesThrown    = self.GrenadesThrown + 1
+	  self.NextGrenadeTime   = CurTime() + 5
 	end
-  end
+  
+	
+  -- throttle porte
+	local ct = CurTime()
+	if ct >= self.NextDoorCheck then
+		self.NextDoorCheck = ct + self.DoorCheckInterval
+
+		local enemy = self:GetEnemy()
+		if IsValid(enemy) then
+		-- 1) traverser si déjà ouverte
+		for _, door in ipairs(ents.FindInSphere(self:GetPos(), 100)) do
+			if door:GetClass():find("door_rotating") and door:GetInternalVariable("m_toggle_state")==0 then
+			self:SetLastPosition(enemy:GetPos())
+			self:SCHEDULE_CHASE_ENEMY()
+			return
+			end
+		end
+
+		-- 2) porte fermée → Use (ouvre) ou grenade+Use ou fallback
+		for _, door in ipairs(ents.FindInSphere(self:GetPos(), 100)) do
+			if door:GetClass():find("door_rotating") and door:GetInternalVariable("m_toggle_state")==1 then
+			local r = math.random()
+			if r < 0.4 then
+				door:AcceptInput("Use", self, self)        -- action “+use”
+				self:SetLastPosition(enemy:GetPos())
+				self:SCHEDULE_CHASE_ENEMY()
+			elseif r < 0.8 then
+				self:VJ_ACT_PLAYACTIVITY(ACT_RANGE_ATTACK1,true)
+				self:ThrowGrenade()
+				timer.Simple(0.5, function() if IsValid(door) then door:AcceptInput("Use", self, self) end end)
+			else
+				self:VJ_TASK_FIND_LOS(300)                 -- fallback : chercher un autre chemin
+			end
+			return
+			end
+		end
+		end
+	end
   
 
 
