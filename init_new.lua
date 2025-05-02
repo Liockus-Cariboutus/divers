@@ -19,143 +19,118 @@ local WhiteListModels = {
 }
 
 
--- Override total du lancer de grenades
-function ENT:OnGrenadeAttack(status, overrideEnt, landDir)
-	if status == "Init" then
-	  local e = self:GetEnemy()
-	  -- annule toujours par défaut
-	  if not IsValid(e) or not self:Visible(e) then return true end
-	  local d = self:GetPos():Distance(e:GetPos())
-	  -- only if visible & 200–600 units & <1 grenade used
-	  if d>200 and d<600 and (self.GrenadesThrown or 0)<1 then
-		self.GrenadesThrown = (self.GrenadesThrown or 0) + 1
-		return false  -- autorise CE lancer unique
-	  end
-	  return true     -- sinon annule
-	end
-	return false
-  end
-  
+-- init_new.lua
+AddCSLuaFile("shared.lua")
+include("shared.lua")
 
+-- Configuration globale
+ENT.MaxGrenades            = 1            -- 1 grenade max par PNJ
+ENT.GrenadesThrown         = 0
+ENT.NextGrenadeTime        = 0
+ENT.HasGrenadeAttack       = false       -- disable default grenade attack
 
+ENT.AlertSoundChance       = 10           -- 1 chance sur 10
+ENT.CombatIdleSoundChance  = 10
+ENT.CallForHelpSoundChance = 10
 
+ENT.CanOpenDoors           = true         -- allow Use on func_door_rotating
+ENT.NextDoorCheck          = 0
+ENT.DoorCheckInterval      = 0.5
 
+ENT.CanInvestigate         = true
+ENT.NextLostSearch         = 0
 
--- À l’apparition de chaque PNJ, on choisit son rôle
+ENT.CanJump                = false        -- disable jumps
+function ENT:OnAnimEvent(ev,evT,evC,evTy,evOp) return true end  -- block T-pose events
+
+-- Role assignment
 function ENT:CustomOnInitialize()
-	-- reset grenades
-	self.GrenadesThrown = 0
-	self.NextGrenadeTime = 0
-	-- 50 % chasseur, 50 % guetteur
-	if math.random() < 0.5 then
-	  self.IsHunter = true
-	else
-	  self.IsHunter = false
-	end
-  end
-  
+  self.GrenadesThrown = 0
+  self.NextGrenadeTime = 0
+  self.IsHunter = (math.random() < 0.5)
+end
 
-
-
-
-
-
-
-----------------------------------------------------------------
--- 1) Hook pour contrôler TOTALEMENT le lancer de grenades
-----------------------------------------------------------------
+-- Controlled grenade hook
 function ENT:OnGrenadeAttack(status, overrideEnt, landDir)
-	if status == "Init" then
-	  local e = self:GetEnemy()
-	  -- chasseur : très rare, seulement s’il voit et est à distance moyenne
-	  if self.IsHunter then
-		if not IsValid(e) or not self:Visible(e) then return true end
-		local d = self:GetPos():Distance(e:GetPos())
-		if d < 200 or d > 600 then return true end
-		if (self.GrenadesThrown or 0) >= 1 then return true end
-		self.GrenadesThrown = (self.GrenadesThrown or 0) + 1
-		return false
-	  end
-	  -- guetteur : encore plus rare, 1 chance sur 10
-	  if not self.IsHunter then
-		if math.random(1,10) ~= 1 then return true end
-		if not IsValid(e) or not self:Visible(e) then return true end
-		self.GrenadesThrown = (self.GrenadesThrown or 0) + 1
-		return false
-	  end
-	end
+  if status == "Init" then
+    local e = self:GetEnemy()
+    if not IsValid(e) or not self:Visible(e) then return true end
+    local d = self:GetPos():Distance(e:GetPos())
+    if d > 200 and d < 600 and (self.GrenadesThrown or 0) < 1 then
+      self.GrenadesThrown = (self.GrenadesThrown or 0) + 1
+      return false
+    end
+    return true
   end
-	
-  ----------------------------------------------------------------
-  -- 2) Refonte de CustomOnThink_Alive()
-  ----------------------------------------------------------------
-  function ENT:CustomOnThink_Alive()
-	local enemy = self:GetEnemy()
-	if not IsValid(enemy) then return end
-  
-	local ct   = CurTime()
-	local me   = self:GetPos()
-	local you  = enemy:GetPos()
-	local vis  = self:Visible(enemy)
-	local dist = me:Distance(you)
-  
-	-- A) Patrouille / recherche si plus visible
-	if not vis and ct >= (self.NextLostSearch or 0) then
-	  self.NextLostSearch = ct + 5
-	  self:VJ_TASK_FIND_LOS(600)           -- fouille la dernière position connue 
-	  return
-	end
-  
-	-- B) Si visible → poursuite agressive
-	if vis then
-	  self:SetLastPosition(you)
-	  self:SCHEDULE_CHASE_ENEMY()
-	  -- autorise UN lancer de grenade immédiat si conditions
-	  -- (OnGrenadeAttack gère l’unique lancer)
-	  self:CustomOnGrenadeCheck()
-	  return
-	end
-  
-	-- C) Gestion des portes (throttle 0.5s)
-	if ct >= (self.NextDoorCheck or 0) then
-	  self.NextDoorCheck = ct + 0.5
-	  for _, door in ipairs(ents.FindInSphere(me,150)) do
-		if door:GetClass():find("door_rotating") then
-		  local st = door:GetInternalVariable("m_toggle_state")
-		  if st == 0 then
-			self:SetLastPosition(you)
-			self:SCHEDULE_CHASE_ENEMY()
-			return
-		  elseif st == 1 then
-			self.CoveringEnabled = false
-			door:Fire("Unlock","",0)
-			door:AcceptInput("Use", self, self)
-			door:Fire("Open","",0)
-			self.CoveringEnabled = true
-			self:SetLastPosition(you)
-			self:SCHEDULE_CHASE_ENEMY()
-			return
-		  end
-		end
-	  end
-	end
-  
-	-- D) couverture par défaut pour éviter le statique
-	if self.CoveringEnabled then
-	  self:SCHEDULE_COVER_ENEMY()           -- ne reste plus figé devant une porte 
-	end
-  end
-	
-  function ENT:CustomOnGrenadeCheck()
-	-- appelle le hook OnGrenadeAttack
-	self:OnGrenadeAttack("Init", nil, nil)
+  return false
+end
+
+-- Custom grenade check helper
+function ENT:CustomOnGrenadeCheck()
+  self:OnGrenadeAttack("Init", nil, nil)
+end
+
+-- Main AI loop
+function ENT:CustomOnThink_Alive()
+  local enemy = self:GetEnemy()
+  if not IsValid(enemy) then return end
+
+  local ct   = CurTime()
+  local me   = self:GetPos()
+  local you  = enemy:GetPos()
+  local dist = me:Distance(you)
+  local vis  = self:Visible(enemy)
+
+  -- 1) Patrol if lost
+  if not vis and ct >= (self.NextLostSearch or 0) then
+    self.NextLostSearch = ct + 5
+    self:VJ_TASK_FIND_LOS(600)
+    return
   end
 
-
-  function ENT:OnAnimEvent(ev, evTime, evCycle, evType, evOptions)
-	-- ignore tout event de “gesture_signal_group” qui pouvait T‑poser
-	if evOptions and evOptions:find("signal_group") then return true end
+  -- 2) When visible
+  if vis then
+    self:SetLastPosition(you)
+    if self.IsHunter then
+      self:SCHEDULE_CHASE_ENEMY()
+    else
+      self:SCHEDULE_COVER_ENEMY()
+    end
+    self:CustomOnGrenadeCheck()
+    return
   end
+
+  -- 3) Door handling
+  if ct >= self.NextDoorCheck then
+    self.NextDoorCheck = ct + self.DoorCheckInterval
+    for _, door in ipairs(ents.FindInSphere(me,150)) do
+      if door:GetClass():find("door_rotating") then
+        local st = door:GetInternalVariable("m_toggle_state")
+        if st == 1 then
+          door:Fire("Unlock","",0)
+          door:AcceptInput("Use",self,self)
+          door:Fire("Open","",0)
+        end
+        if st == 0 then
+          self:SetLastPosition(you)
+          self:SCHEDULE_CHASE_ENEMY()
+          return
+        end
+      end
+    end
+  end
+
+  -- 4) Fallback cover
+  self:SCHEDULE_COVER_ENEMY()
+end
+
+
+
+
+
+
+
+
 
 
   
