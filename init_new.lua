@@ -2,6 +2,8 @@ AddCSLuaFile("shared.lua")
 include("shared.lua")
 
 
+
+
 /*-----------------------------------------------
 	*** Copyright (c) 2012-2025 by DrVrej, All rights reserved. ***
 	No parts of this code or any of its contents may be reproduced, copied, modified or adapted,
@@ -16,6 +18,147 @@ local WhiteListModels = {
 	"models/hts/comradebear/pm0v3/player/heer/infantry/en/m40_s1_06.mdl"
 }
 
+
+-- Override total du lancer de grenades
+function ENT:OnGrenadeAttack(status, overrideEnt, landDir)
+	if status == "Init" then
+	  local e = self:GetEnemy()
+	  -- annule toujours par défaut
+	  if not IsValid(e) or not self:Visible(e) then return true end
+	  local d = self:GetPos():Distance(e:GetPos())
+	  -- only if visible & 200–600 units & <1 grenade used
+	  if d>200 and d<600 and (self.GrenadesThrown or 0)<1 then
+		self.GrenadesThrown = (self.GrenadesThrown or 0) + 1
+		return false  -- autorise CE lancer unique
+	  end
+	  return true     -- sinon annule
+	end
+	return false
+  end
+  
+
+
+
+
+
+-- À l’apparition de chaque PNJ, on choisit son rôle
+function ENT:CustomOnInitialize()
+	-- reset grenades
+	self.GrenadesThrown = 0
+	self.NextGrenadeTime = 0
+	-- 50 % chasseur, 50 % guetteur
+	if math.random() < 0.5 then
+	  self.IsHunter = true
+	else
+	  self.IsHunter = false
+	end
+  end
+  
+
+
+
+
+
+
+
+----------------------------------------------------------------
+-- 1) Hook pour contrôler TOTALEMENT le lancer de grenades
+----------------------------------------------------------------
+function ENT:OnGrenadeAttack(status, overrideEnt, landDir)
+	if status == "Init" then
+	  local e = self:GetEnemy()
+	  -- chasseur : très rare, seulement s’il voit et est à distance moyenne
+	  if self.IsHunter then
+		if not IsValid(e) or not self:Visible(e) then return true end
+		local d = self:GetPos():Distance(e:GetPos())
+		if d < 200 or d > 600 then return true end
+		if (self.GrenadesThrown or 0) >= 1 then return true end
+		self.GrenadesThrown = (self.GrenadesThrown or 0) + 1
+		return false
+	  end
+	  -- guetteur : encore plus rare, 1 chance sur 10
+	  if not self.IsHunter then
+		if math.random(1,10) ~= 1 then return true end
+		if not IsValid(e) or not self:Visible(e) then return true end
+		self.GrenadesThrown = (self.GrenadesThrown or 0) + 1
+		return false
+	  end
+	end
+  end
+	
+  ----------------------------------------------------------------
+  -- 2) Refonte de CustomOnThink_Alive()
+  ----------------------------------------------------------------
+  function ENT:CustomOnThink_Alive()
+	local enemy = self:GetEnemy()
+	if not IsValid(enemy) then return end
+  
+	local ct   = CurTime()
+	local me   = self:GetPos()
+	local you  = enemy:GetPos()
+	local vis  = self:Visible(enemy)
+	local dist = me:Distance(you)
+  
+	-- A) Patrouille / recherche si plus visible
+	if not vis and ct >= (self.NextLostSearch or 0) then
+	  self.NextLostSearch = ct + 5
+	  self:VJ_TASK_FIND_LOS(600)           -- fouille la dernière position connue 
+	  return
+	end
+  
+	-- B) Si visible → poursuite agressive
+	if vis then
+	  self:SetLastPosition(you)
+	  self:SCHEDULE_CHASE_ENEMY()
+	  -- autorise UN lancer de grenade immédiat si conditions
+	  -- (OnGrenadeAttack gère l’unique lancer)
+	  self:CustomOnGrenadeCheck()
+	  return
+	end
+  
+	-- C) Gestion des portes (throttle 0.5s)
+	if ct >= (self.NextDoorCheck or 0) then
+	  self.NextDoorCheck = ct + 0.5
+	  for _, door in ipairs(ents.FindInSphere(me,150)) do
+		if door:GetClass():find("door_rotating") then
+		  local st = door:GetInternalVariable("m_toggle_state")
+		  if st == 0 then
+			self:SetLastPosition(you)
+			self:SCHEDULE_CHASE_ENEMY()
+			return
+		  elseif st == 1 then
+			self.CoveringEnabled = false
+			door:Fire("Unlock","",0)
+			door:AcceptInput("Use", self, self)
+			door:Fire("Open","",0)
+			self.CoveringEnabled = true
+			self:SetLastPosition(you)
+			self:SCHEDULE_CHASE_ENEMY()
+			return
+		  end
+		end
+	  end
+	end
+  
+	-- D) couverture par défaut pour éviter le statique
+	if self.CoveringEnabled then
+	  self:SCHEDULE_COVER_ENEMY()           -- ne reste plus figé devant une porte 
+	end
+  end
+	
+  function ENT:CustomOnGrenadeCheck()
+	-- appelle le hook OnGrenadeAttack
+	self:OnGrenadeAttack("Init", nil, nil)
+  end
+
+
+  function ENT:OnAnimEvent(ev, evTime, evCycle, evType, evOptions)
+	-- ignore tout event de “gesture_signal_group” qui pouvait T‑poser
+	if evOptions and evOptions:find("signal_group") then return true end
+  end
+
+
+  
 function ENT:PreInit()
 	local seq = {}
 	for _,m in ipairs(WhiteListModels) do
@@ -178,16 +321,44 @@ ENT.UsePoseParameterMovement = true
 ENT.VJ_NPC_Class = {"CLASS_PLAYER_ALLY"}
 ENT.AlliedWithPlayerAllies = true
 
-ENT.HasMeleeAttack = true
+ENT.HasMeleeAttack = false
 ENT.AnimTbl_MeleeAttack = "vjseq_seq_meleeattack01"
 
 ENT.WeaponInventory_AntiArmorList = {"weapon_vj_rpg"}
-ENT.WeaponInventory_MeleeList = {"weapon_fists"}
+ENT.WeaponInventory_MeleeList = {}
 
 ENT.HasGrenadeAttack = true
+ENT.MaxGrenades            = 2
+ENT.GrenadeAttackChance     = 5
 ENT.GrenadeAttackThrowTime = 0.85
 ENT.GrenadeAttackModel = "models/npc_doi/weapons/w_stielhandgranate.mdl"
 ENT.AnimTbl_GrenadeAttack = "vjges_gesture_item_throw"
+ENT.GrenadesThrown         = 0
+ENT.NextGrenadeTime        = 0
+
+-- throttle portes
+ENT.NextDoorCheck          = 0
+ENT.DoorCheckInterval      = 0.5
+
+-- Réduire drastiquement les dialogues de combat
+ENT.AlertSoundChance        = 10     -- au lieu de 30 ou 50
+ENT.CombatIdleSoundChance   = 10
+ENT.CallForHelpSoundChance  = 10
+
+-- Patrouille active dès qu'il perd le joueur de vue
+ENT.CanInvestigate          = true
+ENT.InvestigateSoundChance  = 5
+
+-- Conserver la peur des grenades
+ENT.CombatDamageResponse    = true
+ENT.DangerDetectionDistance = 800
+ENT.CanDetectDangers        = true
+ENT.CanRedirectGrenades     = true
+
+-- Désactiver les sauts ridicules
+ENT.CanJump                 = false
+ENT.JumpParams.Enabled      = false
+
 
 ENT.AnimTbl_Medic_GiveHealth = "vjges_gesture_item_drop"
 ENT.AnimTbl_CallForHelp = {"vjges_gesture_signal_group", "vjges_gesture_signal_forward"}
@@ -433,18 +604,6 @@ ENT.SoundTbl_Death = {"vjks_ww2/humans/ger/death_cry/v4/deathcry_01.ogg",
 								"vjks_ww2/humans/ger/death_cry/v4/gen_m_death11.ogg"}
 ---------------------------------------------------------------------------------------------------------------------------------------------
 
--- Limitation de grenades
-ENT.MaxGrenades      = 2        -- chaque PNJ ne peut lancer que 2 grenades
-ENT.GrenadesThrown   = 0
-ENT.NextGrenadeTime  = 0        -- timestamp avant lequel il ne relancera pas
-
-
--- throttle check porte
-ENT.NextDoorCheck = 0
-ENT.DoorCheckInterval = 0.5  -- chaque 0.5s max
-
-
-
 
 -- couverture
 ENT.CoveringEnabled           = true    -- active le cover system
@@ -459,141 +618,12 @@ ENT.CanUseSecondaryweapon     = true
 ENT.Secondaryweapon_class     = "weapon_doi_german_luger"
 ENT.Secondaryweapon_switchchance = 3
 
--- grenades plus « smart »
-ENT.SmartGrenadeThrow_enemyvisible_Next = 10
-
 -- flanquement
 ENT.FlankEnemy_chance   = 50
 ENT.FlankEnemy_Nexttime = 5
 
 
--- grenade porte 
--- Si la porte est déjà ouverte, on la traverse
-function ENT:CustomOnThink_Alive()
-	local enemy = self:GetEnemy()
-	if not IsValid(enemy) then return end
-  
-	-- cherche les portes brush et prop près de la ligne de vue
-	for _, door in ipairs(ents.FindInSphere(self:GetPos(), 100)) do
-	  if door:GetClass():find("door_rotating") then
-		if door:GetInternalVariable("m_toggle_state") == 0 then
-		  -- door open = 0, closed = 1 (source VJ Base) :contentReference[oaicite:0]{index=0}
-		  -- simplement continuer vers l'ennemi
-		  self:SetLastPosition(enemy:GetPos())
-		  self:SCHEDULE_GOTO_POSITION()
-		  return
-		end
-	  end
-	end
-
-	  -- limiter à 2 grenades max
-  if not self.GrenadesThrown then self.GrenadesThrown = 0 end
-  if not self.NextGrenadeTime then self.NextGrenadeTime = 0 end
-  if CurTime() >= self.NextGrenadeTime and self.GrenadesThrown < 2 then
-    -- ton code ThrowGrenade() ici…
-    self.GrenadesThrown    = self.GrenadesThrown + 1
-    self.NextGrenadeTime   = CurTime() + 5
-  end
-
-	for _, door in ipairs(ents.FindInSphere(self:GetPos(), 100)) do
-		if door:GetClass():find("door_rotating") then
-		  local state = door:GetInternalVariable("m_toggle_state")
-		  if state == 1 then
-			-- Porte fermée : choix aléatoire
-			local r = math.random()
-			if r < 0.4 then
-			  -- 40% : simplement ouvrir
-			  door:Fire("Open", "", 0)
-			  self:SetLastPosition(enemy:GetPos())
-			  self:SCHEDULE_GOTO_POSITION()
-			elseif r < 0.8 then
-			  -- 40% : grenade puis ouvrir
-			  self:VJ_ACT_PLAYACTIVITY(ACT_RANGE_ATTACK1, true)
-			  self:ThrowGrenade()
-			  timer.Simple(0.5, function() if IsValid(door) then door:Fire("Open","",0) end end)
-			else
-			  -- 20% : chercher un autre chemin (fallback)
-			  self:VJ_TASK_FIND_LOS(300)  -- find line-of-sight point
-			end
-			return
-		  end
-		end
-	  end
-	
-	-- 2) lancer de grenade sur toute porte (prop_ ou func_)
-    -- limiter à 2 grenades max
-	if not self.GrenadesThrown then self.GrenadesThrown = 0 end
-	if not self.NextGrenadeTime then self.NextGrenadeTime = 0 end
-	if CurTime() >= self.NextGrenadeTime and self.GrenadesThrown < 2 then
-	  -- ton code ThrowGrenade() ici…
-	  self.GrenadesThrown    = self.GrenadesThrown + 1
-	  self.NextGrenadeTime   = CurTime() + 5
-	end
-  
-	
-  -- throttle porte
-	local ct = CurTime()
-	if ct >= self.NextDoorCheck then
-		self.NextDoorCheck = ct + self.DoorCheckInterval
-
-		local enemy = self:GetEnemy()
-		if IsValid(enemy) then
-		-- 1) traverser si déjà ouverte
-		for _, door in ipairs(ents.FindInSphere(self:GetPos(), 100)) do
-			if door:GetClass():find("door_rotating") and door:GetInternalVariable("m_toggle_state")==0 then
-			self:SetLastPosition(enemy:GetPos())
-			self:SCHEDULE_CHASE_ENEMY()
-			return
-			end
-		end
-
-		-- 2) porte fermée → Use (ouvre) ou grenade+Use ou fallback
-		for _, door in ipairs(ents.FindInSphere(self:GetPos(), 100)) do
-			if door:GetClass():find("door_rotating") and door:GetInternalVariable("m_toggle_state")==1 then
-			local r = math.random()
-			if r < 0.4 then
-				door:AcceptInput("Use", self, self)        -- action “+use”
-				self:SetLastPosition(enemy:GetPos())
-				self:SCHEDULE_CHASE_ENEMY()
-			elseif r < 0.8 then
-				self:VJ_ACT_PLAYACTIVITY(ACT_RANGE_ATTACK1,true)
-				self:ThrowGrenade()
-				timer.Simple(0.5, function() if IsValid(door) then door:AcceptInput("Use", self, self) end end)
-			else
-				self:VJ_TASK_FIND_LOS(300)                 -- fallback : chercher un autre chemin
-			end
-			return
-			end
-		end
-		end
-	end
-  
-
-
-
-
-
-
--- function ENT:CustomOnTakeDamage_Before(dmginfo, hitgroup)
--- 	if self:Health() < self.StartHealth * 0.2 then
--- 	  -- passe en sprint pour fuir ou se repositionner
--- 	  self:VJ_ACT_PLAYACTIVITY(ACT_RUN, true)
--- 	end
---   end
-
--- Panique à basse santé
-function ENT:CustomOnTakeDamage_Before(dmginfo, hitgroup)
-	if self:Health() < self.StartHealth * 0.2 then
-	  self:VJ_ACT_PLAYACTIVITY(ACT_RUN, true)
-	  self:SetSchedule(SCHED_RUN_FROM_ENEMY)
-	  VJ.EmitSound(self, {"vo/npc/male01/pain07.wav","vo/npc/male01/pain09.wav"})
-	end
-  end
-
-
-
-
-
+ENT.CanOpenDoors = true 
 
 function ENT:PreInit()
     -- Copie de la whitelist dans une table séquentielle
@@ -646,21 +676,21 @@ end
 end*/
 ---------------------------------------------------------------------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------------------------------------------------
-function ENT:OnDeath(dmginfo, hitgroup, status)
-	if status == "Init" then
-		local pos = self:GetPos()
-		local pitch = math.random(95, 105)
-		local function deathSound(time, snd)
-			timer.Simple(time, function()
-				sound.Play(snd, pos, 65, pitch)
-			end)
-		end
-		-- deathSound(0, "hl1/fvox/beep.wav")
-		-- deathSound(0.25, "hl1/fvox/beep.wav")
-		-- deathSound(0.75, "hl1/fvox/beep.wav")
-		-- deathSound(1.25, "hl1/fvox/beep.wav")
-		-- deathSound(1.7, "hl1/fvox/flatline.wav")
-	end
-end
+-- function ENT:OnDeath(dmginfo, hitgroup, status)
+-- 	if status == "Init" then
+-- 		local pos = self:GetPos()
+-- 		local pitch = math.random(95, 105)
+-- 		local function deathSound(time, snd)
+-- 			timer.Simple(time, function()
+-- 				sound.Play(snd, pos, 65, pitch)
+-- 			end)
+-- 		end
+-- 		-- deathSound(0, "hl1/fvox/beep.wav")
+-- 		-- deathSound(0.25, "hl1/fvox/beep.wav")
+-- 		-- deathSound(0.75, "hl1/fvox/beep.wav")
+-- 		-- deathSound(1.25, "hl1/fvox/beep.wav")
+-- 		-- deathSound(1.7, "hl1/fvox/flatline.wav")
+-- 	end
+-- end
 
 
