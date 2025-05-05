@@ -1,4 +1,3 @@
--- lua/autorun/server/sv_rpgr_persistence.lua
 if SERVER then
     util.AddNetworkString("RPGR_update_bookdata")
     util.AddNetworkString("RPGR_SendBookList")
@@ -143,9 +142,9 @@ hook.Add("InitPostEntity","RPGR_LoadSaves",function()
     for _,data in ipairs(tbl) do
         SpawnEnt(data)
     end
+    SaveAll()
 end)
 
--- save all only on creation & periodically
 function SaveAll()
     local out = {}
     for _,cls in ipairs({"rpgr_book","rpgr_journal","rpgr_stickynote"}) do
@@ -153,9 +152,11 @@ function SaveAll()
             table.insert(out, SerializeEnt(e))
         end
     end
-    file.Write(GetSavePath(), util.TableToJSON(out,true))
+    -- n’écrase que si on a au moins un élément
+    if #out > 0 then
+        file.Write(GetSavePath(), util.TableToJSON(out,true))
+    end
 end
-
 
 timer.Create("RPGR_AutoSave",60,0,SaveAll)
 hook.Add("OnEntityCreated","RPGR_SaveOnCreate",function(e)
