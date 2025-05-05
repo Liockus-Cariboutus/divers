@@ -30,36 +30,24 @@ end
 
 
 
-hook.Add("PostGamemodeLoaded", "RPGR_DefineChatCommands", function()
-    if not DarkRP or not DarkRP.defineChatCommand then return end
+-- hook.Add("Initialize", "RPGR_DefineChatCommands", function()
+--     if not DarkRP or not DarkRP.defineChatCommand then return end
 
-    DarkRP.defineChatCommand("listbooks", function(ply, args)
-        if not ply:IsAdmin() then return "" end
+--     DarkRP.defineChatCommand("listbooks", function(ply, args)
+--         if not ply:IsAdmin() then return "" end
 
-        -- on appelle une petite concommand interne pour être sûrs d'être hors du hook chat
-        ply:ConCommand("rpgr_listbooks_internal")
-        return ""
-    end)
-end)
+--         local js  = file.Read(GetSavePath(), "DATA") or "[]"
+--         local tbl = util.JSONToTable(js) or {}
 
--- commande interne qui envoie réellement le net‑message
-concommand.Add("rpgr_listbooks_internal", function(ply)
-    if not IsValid(ply) or not ply:IsAdmin() then return end
+--         net.Start("RPGR_SendBookList")
+--           net.WriteTable(tbl)
+--         net.Send(ply)
 
-    local js  = file.Read(GetSavePath(), "DATA") or "[]"
-    local tbl = util.JSONToTable(js) or {}
+--         ply:ChatPrint("Voici la liste des livres.")
+--         return ""
+--     end)
+-- end)
 
-    net.Start("RPGR_SendBookList")
-    net.WriteTable(tbl)
-    net.Send(ply)
-end)
-
--- -- ensure data folder exists
--- if SERVER and not file.IsDir(saveDir, "DATA") then
---     file.CreateDir(saveDir)
--- end
--- local saveDir = "rpgr_booksaves"
--- function GetSavePath() return saveDir.."/"..game.GetMap()..".json" end
 
 
 
@@ -147,16 +135,14 @@ end)
 
 function SaveAll()
     local out = {}
-    for _,cls in ipairs({"rpgr_book","rpgr_journal","rpgr_stickynote"}) do
-        for _,e in ipairs(ents.FindByClass(cls)) do
-            table.insert(out, SerializeEnt(e))
-        end
-    end
-    -- n’écrase que si on a au moins un élément
-    if #out > 0 then
-        file.Write(GetSavePath(), util.TableToJSON(out,true))
-    end
-end
+     for _,cls in ipairs({"rpgr_book","rpgr_journal","rpgr_stickynote"}) do
+         for _,e in ipairs(ents.FindByClass(cls)) do
+             table.insert(out, SerializeEnt(e))
+         end
+     end
+    -- on réécrit toujours, même si out=={}
+    file.Write(GetSavePath(), util.TableToJSON(out,true))
+ end
 
 timer.Create("RPGR_AutoSave",60,0,SaveAll)
 hook.Add("OnEntityCreated","RPGR_SaveOnCreate",function(e)
@@ -164,29 +150,21 @@ hook.Add("OnEntityCreated","RPGR_SaveOnCreate",function(e)
 end)
 
 hook.Add("PlayerCleanup", "RPGR_RestoreAfterCleanup", function(ply, cleanupType)
-    timer.Simple(2, function()
-        if not game.IsDedicated() then return end
-        print("[RPGR] Re‑spawning books after cleanup…")
-        -- Appeler directement votre fonction de respawn au lieu de rerunner InitPostEntity
-        local js = file.Read(GetSavePath(), "DATA") or "[]"
-        local tbl = util.JSONToTable(js) or {}
-        for _, data in ipairs(tbl) do
-            SpawnEnt(data)
-        end
+    -- délai mini pour laisser GMod finir son cleanup
+    timer.Simple(1, function()
+        hook.Run("InitPostEntity")
     end)
 end)
 
 hook.Add("PostCleanupMap", "RPGR_RestoreAfterCleanup2", function()
-    timer.Simple(2, function()
-        if not game.IsDedicated() then return end
-        print("[RPGR] Re‑spawning books after map cleanup…")
-        local js = file.Read(GetSavePath(), "DATA") or "[]"
-        local tbl = util.JSONToTable(js) or {}
-        for _, data in ipairs(tbl) do
-            SpawnEnt(data)
-        end
+    timer.Simple(1, function()
+        hook.Run("InitPostEntity")
     end)
 end)
+
+
+
+
 net.Receive("RPGR_DeleteBook", function(len, ply)
     if not IsValid(ply) or not ply:IsAdmin() then return end
 
@@ -430,3 +408,64 @@ net.Receive("RPGR_update_book", function(len, ply)
     net.Broadcast()
 end)
 
+
+-- garde fou de l'autre fou
+-- timer.Simple(0, function()
+--     if GAMEMODE then
+--         -- assure que la table PlayerSayHooks existe
+--         if not istable(GAMEMODE.PlayerSayHooks) then
+--             GAMEMODE.PlayerSayHooks = { All = {}, Team = {} }
+--         else
+--             GAMEMODE.PlayerSayHooks.All  = GAMEMODE.PlayerSayHooks.All  or {}
+--             GAMEMODE.PlayerSayHooks.Team = GAMEMODE.PlayerSayHooks.Team or {}
+--         end
+--     end
+
+--     -- assure que hook.GetTable().PlayerSay existe
+--     local ht = hook.GetTable()
+--     if ht and not ht.PlayerSay then
+--         ht.PlayerSay = {}
+--     end
+-- end)
+
+
+-- → LE VRAI !listbooks QUI MARCHE (version allégée)
+timer.Simple(0, function()
+    if GAMEMODE and not istable(GAMEMODE.PlayerSayHooks) then
+        GAMEMODE.PlayerSayHooks = { All = {}, Team = {} }
+    end
+end)
+
+-- ► Définit la commande DarkRP “/listbooks” qui déclenche notre commande interne
+hook.Add("Initialize", "RPGR_DefineListBooksCmd", function()
+    if not DarkRP or not DarkRP.defineChatCommand then return end
+
+    DarkRP.defineChatCommand("listbooks", function(ply, args)
+        if not IsValid(ply) or not ply:IsAdmin() then return "" end
+        -- On invoque notre concommand serveur pour envoyer la vraie liste
+        ply:ConCommand("rpgr_listbooks_internal")
+        return ""
+    end)
+end)
+
+-- ► Commande interne qui lit le JSON et envoie la liste épurée au client
+concommand.Add("rpgr_listbooks_internal", function(ply)
+    if not IsValid(ply) or not ply:IsAdmin() then return end
+
+    local js   = file.Read(GetSavePath(), "DATA") or "[]"
+    local data = util.JSONToTable(js) or {}
+
+    -- Ne renvoie que les champs id/class/title pour éviter les nil dans WriteInt
+    local list = {}
+    for id, d in ipairs(data) do
+        list[#list+1] = {
+            id    = id,
+            class = d.class or "",
+            title = d.title or ""
+        }
+    end
+
+    net.Start("RPGR_SendBookList")
+      net.WriteTable(list)
+    net.Send(ply)
+end)
