@@ -1,5 +1,3 @@
--- lua/autorun/client/cl_rpgr_listbooks.lua
-
 net.Receive("RPGR_SendBookList", function()
     local list = net.ReadTable()
     local frame = vgui.Create("DFrame")
